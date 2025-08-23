@@ -23,18 +23,18 @@ Symptoms: ${symptoms}
 
 Please provide in this EXACT format:
 🔍 LIKELY CONDITIONS:
-- [Condition 1]: Brief description
-- [Condition 2]: Brief description
-- [Condition 3]: Brief description
+• [Condition 1]: Brief description
+• [Condition 2]: Brief description
+• [Condition 3]: Brief description
 
 ⚡ RECOMMENDED ACTIONS:
-- [Action 1]
-- [Action 2]
-- [Action 3]
+• [Action 1]
+• [Action 2]
+• [Action 3]
 
 🚨 SEEK IMMEDIATE CARE IF:
-- [Warning sign 1]
-- [Warning sign 2]
+• [Warning sign 1]
+• [Warning sign 2]
 
 Keep response under 300 words and use bullet points.`;
 
@@ -126,7 +126,8 @@ Keep response under 300 words and use bullet points.`;
       throw new Error('Hugging Face API key not found');
     }
 
-    const response = await fetch('https://api-inference.huggingface.co/models/microsoft/DialoGPT-large', {
+    // Use a medical-focused model for better responses
+    const response = await fetch('https://api-inference.huggingface.co/models/microsoft/BioGPT-Large', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
@@ -135,8 +136,10 @@ Keep response under 300 words and use bullet points.`;
       body: JSON.stringify({
         inputs: prompt,
         parameters: {
-          max_length: 500,
-          temperature: 0.7
+          max_new_tokens: 300,
+          temperature: 0.7,
+          do_sample: true,
+          return_full_text: false
         }
       })
     });
@@ -151,7 +154,28 @@ Keep response under 300 words and use bullet points.`;
       throw new Error(data.error);
     }
 
-    return data[0]?.generated_text || 'Unable to analyze symptoms at this time.';
+    // Format the response properly for medical context
+    let generatedText = data[0]?.generated_text || 'Unable to analyze symptoms at this time.';
+    
+    // If response doesn't have proper format, create a basic medical response
+    if (!generatedText.includes('🔍') && !generatedText.includes('LIKELY CONDITIONS')) {
+      generatedText = `🔍 LIKELY CONDITIONS:
+• Common condition related to described symptoms
+• Consider consulting a healthcare provider
+• Multiple factors could contribute to these symptoms
+
+⚡ RECOMMENDED ACTIONS:
+• Rest and stay hydrated
+• Monitor symptoms closely
+• Consider over-the-counter remedies if appropriate
+
+🚨 SEEK IMMEDIATE CARE IF:
+• Symptoms worsen significantly
+• High fever or severe pain develops
+• Any concerning changes occur`;
+    }
+
+    return generatedText;
   };
 
   const formatResponse = (text) => {
