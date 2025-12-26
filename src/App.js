@@ -1,11 +1,51 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import './App.css';
+import html2canvas from 'html2canvas';
+import { jsPDF } from 'jspdf';
 
 function App() {
   const [symptoms, setSymptoms] = useState('');
   const [response, setResponse] = useState('');
   const [loading, setLoading] = useState(false);
   const [apiUsed, setApiUsed] = useState('');
+
+  // Voice / TTS and Speech Recognition state
+  const [speaking, setSpeaking] = useState(false);
+  const [voices, setVoices] = useState([]);
+  const [recognitionActive, setRecognitionActive] = useState(false);
+  const [recognitionAvailable, setRecognitionAvailable] = useState(false);
+  const recognitionRef = useRef(null);
+
+  useEffect(() => {
+    // Load available TTS voices
+    const updateVoices = () => {
+      const vs = window.speechSynthesis.getVoices();
+      setVoices(vs);
+    };
+
+    updateVoices();
+    window.speechSynthesis.onvoiceschanged = updateVoices;
+
+    // Set up speech recognition if available
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (SpeechRecognition) {
+      setRecognitionAvailable(true);
+      const rec = new SpeechRecognition();
+      rec.continuous = false;
+      rec.interimResults = false;
+      rec.lang = 'en-US';
+      rec.onresult = (event) => {
+        const transcript = Array.from(event.results).map(r => r[0].transcript).join('');
+        setSymptoms(prev => (prev ? prev + ' ' + transcript : transcript));
+      };
+      rec.onend = () => setRecognitionActive(false);
+      recognitionRef.current = rec;
+    }
+
+    return () => {
+      window.speechSynthesis.onvoiceschanged = null;
+    };
+  }, []);
 
   const analyzeSymptoms = async () => {
     if (!symptoms.trim()) {
@@ -212,6 +252,65 @@ Keep response under 300 words and use bullet points.`;
     }).filter(Boolean);
   };
 
+  // Text-to-speech: speak the analysis (strip icons for clarity)
+  const speakText = (text) => {
+    if (!text || !window.speechSynthesis) return;
+    stopSpeech();
+    const clean = text.replace(/[🔍⚡🚨📋📌]/g, '');
+    const utterance = new SpeechSynthesisUtterance(clean);
+    const preferred = voices.find(v => v.lang && v.lang.includes('en')) || voices[0];
+    if (preferred) utterance.voice = preferred;
+    utterance.rate = 1;
+    utterance.onstart = () => setSpeaking(true);
+    utterance.onend = () => setSpeaking(false);
+    window.speechSynthesis.speak(utterance);
+  };
+
+  const stopSpeech = () => {
+    if (window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+      setSpeaking(false);
+    }
+  };
+
+  // Speech recognition control
+  const startListening = () => {
+    if (!recognitionRef.current) return;
+    try {
+      recognitionRef.current.start();
+      setRecognitionActive(true);
+    } catch (err) {
+      console.warn('Speech recognition error', err);
+    }
+  };
+
+  const stopListening = () => {
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+      setRecognitionActive(false);
+    }
+  };
+
+  // PDF export using html2canvas + jsPDF
+  const downloadPdf = async () => {
+    try {
+      const element = document.querySelector('.main-content');
+      if (!element) return alert('No content to export');
+
+      const canvas = await html2canvas(element, { scale: 2 });
+      const imgData = canvas.toDataURL('image/png');
+      const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' });
+      const pdfWidth = pdf.internal.pageSize.getWidth();
+      const imgProps = pdf.getImageProperties(imgData);
+      const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
+      pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
+      pdf.save('medisense-analysis.pdf');
+    } catch (err) {
+      console.error('PDF export failed', err);
+      alert('PDF export failed. You can still use the browser print as a fallback.');
+    }
+  };
+
   const handleKeyPress = (e) => {
     if (e.key === 'Enter' && e.ctrlKey) {
       analyzeSymptoms();
@@ -221,7 +320,7 @@ Keep response under 300 words and use bullet points.`;
   return (
     <div className="App">
       <header className="app-header">
-        <h1>🏥 Medical Symptoms Analyzer</h1>
+        <h1>Medical Symptoms Analyzer</h1>
         <p>Get AI-powered insights about your symptoms</p>
       </header>
 
@@ -239,15 +338,36 @@ Keep response under 300 words and use bullet points.`;
           />
           <div className="char-count">{symptoms.length}/1000</div>
           
-          <button 
-            onClick={analyzeSymptoms} 
-            disabled={loading || !symptoms.trim()}
-            className="analyze-btn"
-          >
-            {loading ? '🔄 Analyzing...' : '🔍 Analyze Symptoms'}
-          </button>
-          
-          <p className="tip">💡 Tip: Press Ctrl+Enter to analyze</p>
+          <div style={{display: 'flex', gap: '0.75rem', marginTop: '1rem', alignItems: 'center'}}>
+            <button 
+              onClick={analyzeSymptoms} 
+              disabled={loading || !symptoms.trim()}
+              className="analyze-btn"
+            >
+              {loading ? 'Analyzing...' : 'Analyze'}
+            </button>
+
+            <button
+              type="button"
+              className="secondary-btn"
+              onClick={() => speakText(response)}
+              disabled={!response || speaking}
+            >
+              {speaking ? 'Speaking...' : 'Play'}
+            </button>
+
+            {recognitionAvailable && (
+              <button
+                type="button"
+                className="secondary-btn"
+                onClick={recognitionActive ? stopListening : startListening}
+              >
+                {recognitionActive ? 'Stop Mic' : 'Start Mic'}
+              </button>
+            )}
+          </div>
+
+          <p className="tip">Tip: Press Ctrl+Enter to analyze</p>
         </div>
 
         {loading && (
@@ -259,10 +379,15 @@ Keep response under 300 words and use bullet points.`;
 
         {response && !loading && (
           <div className="response-section">
-            <div className="api-badge">
-              Powered by: {apiUsed}
+            <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem', marginBottom: '0.5rem'}}>
+              <div className="api-badge">Powered by: {apiUsed}</div>
+              <div style={{display: 'flex', gap: '0.5rem', alignItems: 'center'}}>
+                <button className="secondary-btn" onClick={() => speakText(response)} disabled={!response || speaking}>{speaking ? 'Speaking...' : 'Play'}</button>
+                <button className="secondary-btn" onClick={stopSpeech} disabled={!speaking}>Stop</button>
+                <button className="secondary-btn" onClick={downloadPdf} disabled={!response}>Download PDF</button>
+              </div>
             </div>
-            <h3>📋 Analysis Results</h3>
+            <h3>Analysis Results</h3>
             <div className="response-content">
               {formatResponse(response)}
             </div>
